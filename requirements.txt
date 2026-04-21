@@ -5,3 +5,4 @@ torchvision==0.17.2
 Pillow
 werkzeug
 gunicorn
+numpy<2.0.0
