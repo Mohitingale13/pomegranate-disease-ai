@@ -1,4 +1,9 @@
 import os
+# Put TensorFlow on a memory diet BEFORE importing it
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Force CPU only
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'   # Turn off heavy logging
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true' # Prevent memory hoarding
+
 import numpy as np
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
