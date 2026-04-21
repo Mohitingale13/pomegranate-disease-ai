@@ -1,8 +1,6 @@
 import os
-# Put TensorFlow on a memory diet BEFORE importing it
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Force CPU only
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'   # Turn off heavy logging
-os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true' # Prevent memory hoarding
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import numpy as np
 from flask import Flask, request, jsonify, render_template
@@ -12,36 +10,14 @@ from PIL import Image
 
 app = Flask(__name__)
 
-# --- 1. LOAD THE MODEL & CLASSES ---
-MODEL_PATH = 'pomegranate_disease_model.keras'
+# --- 1. LOAD THE TFLITE MODEL ---
+# This uses a fraction of the memory compared to standard Keras
+interpreter = tf.lite.Interpreter(model_path="model.tflite")
+interpreter.allocate_tensors()
 
-# THE BULLETPROOF FIX: Rebuild the model structure manually 
-# and just load the learned weights to bypass the configuration bug.
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
 
-print("Building model architecture...")
-# 1. Recreate the base (without downloading weights, since we have our own)
-base_model = tf.keras.applications.MobileNetV2(
-    input_shape=(224, 224, 3),
-    include_top=False,
-    weights=None 
-)
-
-# 2. Recreate our custom sequence
-model = tf.keras.Sequential([
-    tf.keras.layers.Input(shape=(224, 224, 3)),
-    tf.keras.layers.Rescaling(1./127.5, offset=-1),
-    base_model,
-    tf.keras.layers.GlobalAveragePooling2D(),
-    tf.keras.layers.Dropout(0.2),
-    tf.keras.layers.Dense(5, activation='softmax')
-])
-
-print("Loading saved weights...")
-# 3. Pour your trained knowledge into the empty shell
-model.load_weights(MODEL_PATH)
-print("Model loaded successfully!")
-
-# These must match the exact alphabetical order from your dataset folders
 CLASS_NAMES = ['Alternaria', 'Anthracnose', 'Bacterial_Blight', 'Cercospora', 'Healthy']
 # --- 2. RECOMMENDATION LOGIC ---
 def generate_verdict(disease_name, temperature, humidity):
@@ -110,14 +86,16 @@ def predict():
         image = image.resize((224, 224)) # Resize exactly as we did in Colab
         img_array = np.array(image)
         
-        # The model expects a "batch" of images, so we expand dimensions
-        # Shape goes from (224, 224, 3) to (1, 224, 224, 3)
-        img_array = np.expand_dims(img_array, axis=0) 
+        # TFLite strictly requires the data to be float32 format
+        img_array = np.expand_dims(img_array, axis=0).astype(np.float32) 
         
-        # Get prediction from the ML Model
-        predictions = model.predict(img_array)
-        predicted_class_index = np.argmax(predictions[0]) # Get the index of highest probability
-        predicted_class_name = CLASS_NAMES[predicted_class_index] # Map index to name
+        # Get prediction from the TFLite Model
+        interpreter.set_tensor(input_details[0]['index'], img_array)
+        interpreter.invoke()
+        predictions = interpreter.get_tensor(output_details[0]['index'])
+        
+        predicted_class_index = np.argmax(predictions[0])
+        predicted_class_name = CLASS_NAMES[predicted_class_index]
         
         # Generate the verdict using our logic
         result = generate_verdict(predicted_class_name, temp, hum)
