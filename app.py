@@ -1,61 +1,96 @@
 import os
-import torch
-from torchvision import models, transforms
-from PIL import Image
+import base64
+import numpy as np
 from flask import Flask, request, jsonify, render_template
+import tensorflow as tf
+from PIL import Image
+from gtts import gTTS
+import io
 
 app = Flask(__name__)
 
-# --- 1. LOAD THE PYTORCH MODEL ---
-# This bypasses all TensorFlow bugs by using a lightweight, pre-trained PyTorch model
-print("Loading model...")
-weights = models.ResNet18_Weights.DEFAULT
-model = models.resnet18(weights=weights)
-model.eval() # Set model to evaluation (prediction) mode
+# --- 1. LOAD YOUR EXACT TRAINED MODEL ---
+MODEL_PATH = 'pomegranate_disease_model.keras'
 
-# The classes that ResNet18 knows (ImageNet classes)
-# We will map these general classifications to our specific logic later if needed
-categories = weights.meta["categories"]
+print("Rebuilding architecture and loading custom weights...")
+base_model = tf.keras.applications.MobileNetV2(
+    input_shape=(224, 224, 3), include_top=False, weights=None)
 
-# The required image transformation pipeline for PyTorch
-preprocess = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+model = tf.keras.Sequential([
+    tf.keras.layers.Input(shape=(224, 224, 3)),
+    tf.keras.layers.Rescaling(1./127.5, offset=-1),
+    base_model,
+    tf.keras.layers.GlobalAveragePooling2D(),
+    tf.keras.layers.Dropout(0.2),
+    tf.keras.layers.Dense(5, activation='softmax')
 ])
 
-# --- 2. RECOMMENDATION LOGIC ---
-# For now, we will use a simplified mock logic to ensure the pipeline works perfectly
+# Pour your Kaggle-trained knowledge into the shell
+model.load_weights(MODEL_PATH)
+
+CLASS_NAMES = ['Alternaria', 'Anthracnose', 'Bacterial_Blight', 'Cercospora', 'Healthy']
+
+# --- 2. LOGIC & MARATHI AUDIO GENERATION ---
+def generate_audio(text):
+    """Converts Marathi text to speech and encodes it for the frontend."""
+    tts = gTTS(text=text, lang='mr')
+    fp = io.BytesIO()
+    tts.write_to_fp(fp)
+    fp.seek(0)
+    return base64.b64encode(fp.read()).decode('utf-8')
+
 def generate_verdict(disease_name, temperature, humidity):
+    if disease_name == "Healthy":
+        marathi_speech = "तुमचे डाळिंब निरोगी आहे. योग्य पाणी आणि खत व्यवस्थापन चालू ठेवा. पिकाला जास्त पाणी देऊ नका."
+        return {
+            "disease": "Healthy \u2705", "risk": "Low", "risk_color": "text-green-600",
+            "advice": "Your pomegranate looks healthy. Continue standard practices.",
+            "audio": generate_audio(marathi_speech)
+        }
+        
+    advice = ""
+    risk_level, risk_color = "Medium", "text-yellow-600"
+    marathi_speech = ""
     
-    # In a real scenario, you'd fine-tune this model on your specific pomegranate dataset.
-    # Because we are using a general model to bypass the bug, it might output a generic plant name.
-    # We will simulate a detection based on environmental risk for demonstration.
-    
-    risk_level = "Medium"
-    risk_color = "text-yellow-600"
-    advice = "Maintain standard care."
-    detected_condition = "Unknown Plant Issue"
-
-    if temperature >= 25 and humidity > 80:
-        detected_condition = "High Risk (Fungal conditions)"
-        risk_level, risk_color = "Critical", "text-red-600"
-        advice = "HIGH RISK: Warm, moist conditions accelerate fungal infections. Ensure proper soil drainage and consider preventative fungicides."
-    elif temperature >= 25 and humidity > 50:
-        detected_condition = "High Risk (Bacterial conditions)"
-        risk_level, risk_color = "Critical", "text-red-600"
-        advice = "HIGH RISK: Temperatures over 25°C with moderate humidity cause rapid spread. Avoid excess nitrogen fertilizers."
-    elif temperature < 25 and humidity < 50:
-         detected_condition = "Low Risk / Healthy"
-         risk_level, risk_color = "Low", "text-green-600"
-         advice = "Your plant environment looks healthy. Continue standard irrigation practices."
-
+    if disease_name == "Alternaria":
+        if temperature >= 20 and humidity > 85:
+            risk_level, risk_color = "Critical", "text-red-600"
+            advice = "HIGH RISK: Weather favorable for Alternaria spread. Improve drainage immediately and apply copper-based fungicides."
+            marathi_speech = "धोका: दमट हवामानामुळे अल्टरनेरिया बुरशीचा धोका आहे. बागेत पाणी साचू देऊ नका आणि कॉपरयुक्त बुरशीनाशकाची फवारणी करा."
+        else:
+            advice = "Action: Improve field drainage. Remove old planting debris."
+            marathi_speech = "अल्टरनेरिया आढळला आहे. बागेतील जुना कचरा नष्ट करा."
+            
+    elif disease_name == "Bacterial_Blight":
+        if temperature >= 25 and humidity > 50:
+            risk_level, risk_color = "Critical", "text-red-600"
+            advice = "HIGH RISK: Temperatures cause rapid spread of Bacterial Blight. Avoid excess nitrogen. Apply Copper oxychloride."
+            marathi_speech = "धोका: जास्त तापमानामुळे तेल्या रोगाचा प्रसार वेगाने होऊ शकतो. नायट्रोजनयुक्त खतांचा अतिवापर टाळा आणि कॉपर ऑक्सिक्लोराईडची फवारणी करा."
+        else:
+            advice = "Action: Strictly prune infected branches."
+            marathi_speech = "तेल्या रोग आढळला आहे. बाधित फांद्या छाटून नष्ट करा."
+            
+    elif disease_name == "Anthracnose":
+        if 25 <= temperature <= 30 and humidity > 80:
+            risk_level, risk_color = "Critical", "text-red-600"
+            advice = "HIGH RISK: Optimal breeding ground for Anthracnose. Apply fungicides like Mancozeb."
+            marathi_speech = "धोका: उच्च आर्द्रतेमुळे अँथ्रॅकनोजचा धोका आहे. मॅनकोझेब सारख्या बुरशीनाशकाची फवारणी करा."
+        else:
+            advice = "Action: Ensure spacing between plants to reduce trapped humidity."
+            marathi_speech = "अँथ्रॅकनोज आढळला आहे. झाडांमध्ये हवा खेळती राहील याची काळजी घ्या."
+            
+    elif disease_name == "Cercospora":
+        if temperature >= 25 and humidity > 80:
+            risk_level, risk_color = "Critical", "text-red-600"
+            advice = "HIGH RISK: Warm, moist conditions accelerate Cercospora. Ensure proper soil drainage."
+            marathi_speech = "धोका: उबदार आणि दमट वातावरणामुळे सर्कोस्पोरा रोगाचा प्रादुर्भाव वाढतो. बागेत पाणी साचू देऊ नका."
+        else:
+            advice = "Action: Disinfect pruning tools with bleach."
+            marathi_speech = "सर्कोस्पोरा आढळला आहे. छाटणीची साधने निर्जंतुक करा."
+            
     return {
-        "disease": detected_condition,
-        "risk": risk_level,
-        "risk_color": risk_color,
-        "advice": advice
+        "disease": disease_name.replace('_', ' '), "risk": risk_level, 
+        "risk_color": risk_color, "advice": advice, "audio": generate_audio(marathi_speech)
     }
 
 # --- 3. ROUTES ---
@@ -66,38 +101,20 @@ def index():
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'No image uploaded'})
-            
         file = request.files['file']
         temp = float(request.form.get('temperature', 25.0))
         hum = float(request.form.get('humidity', 60.0))
         
-        # Process the image
         image = Image.open(file.stream).convert('RGB')
-        input_tensor = preprocess(image)
-        input_batch = input_tensor.unsqueeze(0) # Create a mini-batch as expected by the model
-
-        # Get the prediction
-        with torch.no_grad(): # Disable gradient calculation for faster inference
-            output = model(input_batch)
-            
-        # The output has unnormalized scores. To get probabilities, you can run a softmax on it.
-        probabilities = torch.nn.functional.softmax(output[0], dim=0)
+        image = image.resize((224, 224))
+        img_array = np.expand_dims(np.array(image), axis=0) 
         
-        # Get the top category predicted
-        top_prob, top_catid = torch.topk(probabilities, 1)
-        predicted_class_name = categories[top_catid[0]]
+        predictions = model.predict(img_array)
+        predicted_class_name = CLASS_NAMES[np.argmax(predictions[0])]
         
-        # Generate the verdict using our logic
-        result = generate_verdict(predicted_class_name, temp, hum)
-        
-        return jsonify(result)
-        
+        return jsonify(generate_verdict(predicted_class_name, temp, hum))
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         return jsonify({'error': str(e)})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=7860, debug=True)
