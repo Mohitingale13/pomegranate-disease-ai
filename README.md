@@ -1,4 +1,4 @@
-Here is the deployed lin for the project. Its a pomogranate disease detection project.
+Here is the deployed link for the project. Its a pomogranate disease detection project. Made this project for mechanical branch students as they needed it for there project.
 
 https://huggingface.co/spaces/Mohit01ingale/pomegranate-expert-ai
 
